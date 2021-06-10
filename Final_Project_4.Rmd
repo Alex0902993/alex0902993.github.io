@@ -1,0 +1,496 @@
+---
+title: "Final_Project_4"
+author: "Aleksandar Vujic"
+date: "08/06/2021"
+output: 
+  html_document: 
+    theme: paper
+    toc: true
+    toc_float: true
+editor_options: 
+  chunk_output_type: console
+---
+
+---
+title: "Astronauts"
+author: "Aleksandar Vujic"
+date: "15/05/2021"
+output: 
+  html_document: 
+    theme: lumen
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(broom)
+library(readr)
+library(tidytuesdayR)
+library(psych)
+library(easystats)
+library(scales)
+library(MASS)
+library(robustbase)
+library(GGally)
+library(kableExtra)
+library(lm.beta)
+library(car)
+library(ggpubr)
+
+
+theme_set(theme_bw())
+
+```
+
+# Data
+
+## Astronauts
+
+```{r Data, warning=FALSE, message=FALSE}
+astronauts <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-07-14/astronauts.csv')
+```
+
+<https://github.com/rfordatascience/tidytuesday/tree/master/data/2020/2020-07-14>
+
+# **Data cleaning**
+
+```{r Data cleaning}
+
+# Look at the data
+glimpse(astronauts)
+
+
+# We will remove original_name because it contains the Cyrillic letters as well, we don't need that.
+
+# Also we will remove total hours of all missions per astronaut (total_hours_sum), total number of missions, as well as total hours of EVAs, to avoid confusion. We can get those summaries from hours_mission, mission_number, and eva_hrs_mission.
+astronauts <- astronauts %>% 
+  dplyr::select(-c(original_name, total_hrs_sum, total_eva_hrs, total_number_of_missions))
+
+
+# Occupation will need correction
+astronauts %>% 
+  distinct(occupation)
+
+astronauts %>% 
+  distinct(military_civilian)
+
+# Correct the coding
+astronauts <- astronauts  %>% 
+  mutate(
+    occupation = dplyr::recode(occupation, "Other (space tourist)" = "space_tourist",
+                                           "Other (Space tourist)" = "space_tourist",
+                                           "Space tourist" = "space_tourist",
+                                           "Pilot" = "pilot",
+                                           "spaceflight participant" = "spaceflight_participant",
+                                           "flight engineer" = "flight_engeneer",
+                                           "Flight engineer" = "flight_engeneer",
+                                           "Other (Journalist)" = "jounralist")) %>% 
+  rename(eva_instances_per_mission = field21, country = nationality) %>% 
+  mutate_if(is.character, as.factor)
+
+# I could not find what do PSP and MSP mean
+
+
+```
+
+# **Exploratory Data Analysis**
+
+## First, let's see where do most of the astronauts come from
+
+```{r Countries}
+
+# Gender 
+astronauts %>% 
+  count(sex)
+# We have ten time more male than female astronauts
+
+
+# We can also look at the occupation
+astronauts %>% 
+  count(occupation, sort = TRUE)
+
+# By country
+astronauts %>% 
+  count(country, sort = TRUE)
+
+# Since there are rather few astronauts with nationalities other than US or Soviet / Russian, we will collapse all other groups into 'Other'
+astronauts <- astronauts %>% 
+    mutate(country_group = fct_other(country, keep = c("U.S.", "U.S.S.R/Russia")))
+
+astronauts %>% 
+  ggplot(aes(fct_rev(country_group))) + 
+  geom_bar(fill = "steelblue") + 
+  labs(title = "Where do astronauts come from?", 
+       y = "Count", x = NULL) +
+  coord_flip()
+
+
+```
+
+We can see that the US had twice as more astronauts than all other countries combined.
+
+## Individuals
+
+```{r Astronauts}
+
+# Plot the top 20 astronauts by time spent in space
+astronauts %>% 
+  group_by(name) %>% 
+  summarise(total_hours = sum(hours_mission)) %>% 
+  mutate(days_in_space = total_hours/24) %>% 
+  slice_max(total_hours, n = 20) %>% 
+  ggplot(aes(y = fct_reorder(name, total_hours), 
+                                x = days_in_space, color = days_in_space)) +
+  geom_point(size = 3) + 
+  geom_segment(aes(xend = 100,yend = name),size=2) + 
+  labs(title = "Astronauts with the most days in space",x = "Days spent in space", y = NULL) + 
+  theme(legend.position = "none") + 
+  xlim(100, 900) 
+
+
+```
+
+## Missions by country since the beginning of space exploration
+
+```{r Missions by year, message=FALSE}
+
+# Compare the number of missions through the years
+astronauts %>% 
+  group_by(year_of_mission, country_group) %>% 
+  summarise(n = n()) %>% 
+  ggplot(aes(x = year_of_mission, y = n, color = country_group)) + 
+  geom_line(size = 1, alpha = 0.8) + 
+  labs(title = "Number of missions per country by year", 
+       x = "Year of the mission", y = "Number of missions",
+       color = "Country") + 
+  guides(color = guide_legend(override.aes = list(alpha = 1))) 
+```
+
+We can see that Soviet Union / Russia had more missions than the US at some point during the 70s, up to the 1980. Also, they had slightly more missions in past few years. Otherwise, the US had tremendously more missions than anyone else, with five large peaks from the 80s to the end of the 20th century. 
+
+## Next, I am interested in where did astronauts spend the most time in orbit
+
+Again, we will only look at the most frequent spacecrafts
+
+```{r In orbit}
+
+# Look at the spacecrafts
+astronauts %>% 
+  count(in_orbit, country_group) %>% 
+  arrange(desc(n)) %>% 
+  slice_max(n, n = 5) 
+
+# In orbit spacecraft by country
+astronauts %>% 
+  filter(in_orbit %in% c("ISS", "Mir","Salyut 6", "STS-42")) %>% 
+  ggplot(aes(fct_rev(in_orbit),  fill = country_group)) + 
+  geom_bar() + 
+  coord_flip() + 
+  labs(title = "Most visited space stations in orbit so far", 
+       y = "Number of visits", x = "Name of the spacecraft", 
+       caption = expression(paste(italic("Note."), " STS-42 was a spacelab module on Discovery shuttle.")))
+
+```
+
+Here it is interesting that Russians had if not the largest proportion of visits to ISS.
+
+## Now, let's see which country has the most total hours in space by mission
+
+```{r Number of mission vs hours mission}
+astr_country_hours <- astronauts %>% 
+  group_by(country_group) %>% 
+  summarise(number_of_missions = n(),
+            total_hours = sum(hours_mission)) %>%
+  mutate(country_group = fct_reorder(country_group, total_hours),
+         days_in_space = total_hours/24)
+
+plot_1 <- astr_country_hours %>% 
+  ggplot(aes(x = country_group, y = number_of_missions)) + 
+  geom_col(fill = "steelblue") +
+  labs(x = "Country", y = "Number of missions")
+
+plot_2 <- astr_country_hours %>% 
+  ggplot(aes(x = country_group, y = days_in_space)) + 
+  geom_col(fill = "steelblue") +
+  labs(x = "Country", y = "Total dyas in space") + 
+  scale_y_continuous(labels = comma)
+
+p = ggarrange(plot_1, plot_2, ncol = 2)
+annotate_figure(p,top = text_grob("Total number of missions and hours in space and  by country"))
+```
+
+Interestingly, Russians have more total hours in space, while Americans have greater number of missions. It means that Russian missions are fewer but longer. Country membership (US, Soviet / Russian or Other) could be a predictor of mission duration.
+
+## Military vs civilian personnel
+
+```{r Military vs civilian, warning=FALSE, message=FALSE}
+
+# Military vs civilian astronauts count
+bar_1 <- astronauts %>% 
+  ggplot(aes(x = military_civilian, fill = country_group)) + 
+  geom_bar(position = "dodge") +
+  labs(fill = "Country", x = NULL, y = "Count") +
+  theme(legend.position = "none")
+
+# Military vs civilian by hours in space
+bar_2 <- astronauts %>% 
+  ggplot(aes(x = military_civilian, y = hours_mission, fill = country_group)) +
+  geom_col(position = "dodge") +
+  labs(fill = "Country", x = NULL, y = "Hours in space") +
+  scale_y_continuous(labels = comma) +
+  theme(legend.position = "none")
+
+p2 = ggarrange(bar_1, bar_2, ncol = 2, common.legend = TRUE, legend = "bottom")
+annotate_figure(p2,top = text_grob("Military and civilian personnel in space"))
+```
+
+## Hours in space and hours of extravehicular activities vs year
+
+```{r warning=FALSE, message=FALSE}
+
+scatter_1 <- astronauts %>%
+  filter(eva_hrs_mission > 0) %>% 
+  ggplot(aes(x = year_of_mission, y = eva_hrs_mission, color = country_group)) + 
+  geom_point() + 
+  labs(title = "Length of EVA by year", color = "Country", x = "Year of the mission", y = "Duration of EVA (hrs)",
+       caption = expression(paste(italic("Note."), " EVA - extravehicular activity"))) + 
+  geom_label(data = subset(astronauts, eva_hrs_mission > 75), 
+             aes(label = ascend_shuttle), 
+             nudge_y = -5,
+             color = "darkblue") + 
+  theme(legend.position = "none")
+
+
+scatter_2 <- astronauts %>% 
+  filter(hours_mission > 0) %>% 
+  ggplot(aes(x = year_of_mission, y = hours_mission, color = country_group)) + 
+  geom_point() + 
+  scale_y_log10() + 
+  labs(title = "Length of mission by year", x = "Year of the mission", 
+       y = "Duration of mission in hours (log10)")
+
+
+ggarrange(scatter_1, scatter_2, ncol = 2, common.legend = TRUE, legend = "bottom")  
+```
+
+Length of missions is increased over time. We see that Soyuz TM-26 had an extravehicular activity for over 75 hours. The name of the mission was "24", but the name of the ascend shuttle was shown to avoid confusion.
+
+# **Build a regression model**
+
+We will try to predict the total duration of mission according to extravehicular activity (whether there was one or not), country (US or Russia), and the year of the mission.
+
+## Prepare the data
+
+We will dichotomize the eva_hrs_mission variable (there are too many missions with no extravehicular activity). We will also take a log10 of hours_mission variable.
+
+```{r preparing}
+
+# Make a dichotomous variable eva_hrs_mission
+astronauts %>% 
+  summarize(eva_hrs_mission) %>% 
+  arrange(eva_hrs_mission) 
+
+astronauts %>% 
+  ggplot(aes(hours_mission)) +
+  geom_histogram(color = "white", fill = "steelblue") + 
+  labs(title = "Hours mission variable distribution")
+
+# Drop the level 'Other' from country_group variable
+astronauts_drop <- astronauts %>% 
+   filter(country_group %in% c("U.S.", "U.S.S.R/Russia"),
+         hours_mission > 10) %>% 
+   droplevels() %>%  
+   mutate(eva_group = ifelse(eva_hrs_mission == 0, "No EVA", "EVA"),
+         eva_group = as.factor(eva_group),
+         country_group = relevel(country_group, "U.S."),
+         hours_mission_log = log10(hours_mission + 0.01))
+
+# Plot hours_mission_log
+astronauts_drop %>% 
+  ggplot(aes(hours_mission_log)) +
+  geom_histogram(color = "white", fill = "steelblue", bins = 15) + 
+  labs(title = "Hours mission variable distribution")
+
+
+astronauts_drop %>% 
+  count(eva_group)
+
+```
+
+## *Initial model*
+
+```{r Initial model}
+# Fit the model
+model_1 <- lm(hours_mission_log ~ year_of_mission, data = astronauts_drop)
+
+# Look at the summary and coefficients
+glance(model_1)
+tidy(model_1, conf.int = TRUE)
+```
+
+The single predictor seems to explain considerable amount of mission hours' variance. The coefficient is also significant, however, since we logged the outcome variable, the interpretation of the unstandaridzed estimate would not be straightforward. However, the year of the mission is positively related to the log10 of mission duration. This suggest that as time goes by, the space missions tend to be longer.
+
+### Check the initial model assumptions
+
+```{r Check the assumptions initial model}
+check_model(model_1)
+```
+
+As for assumptions, the situation does not appear really nice. First, there is a slight deviation from linearity. The residuals do not form a normal distribution around 0. We have 2 peaks. The Q-Q plot also shows this pattern. Finally, the scale location plot shows clear pattern and the reference line is not exactly straight. This indicates heteroskedasticity.
+
+## *Complex model*
+
+We will add the rest of our predictors to the model.
+
+```{r Complex model}
+# Fit model 2
+model_2 <- lm(hours_mission_log ~ year_of_mission + country_group + eva_group, data = 
+                astronauts_drop)
+
+
+# Check the summary and coefficients of the more complex model
+glance(model_2)
+tidy(model_2, conf.int = TRUE)
+
+```
+
+The model 2 explains 56% of the outcome's variance, with all predictors being significant. Being a Russian is associated with the increase in log10 of mission hours. This is in line from what we saw in EDA. Absence of extravehicular activities is negatively associated with the mission duration, which is somewhat obvious finding.
+
+### Check the complex model assumptions
+
+```{r heck the assumptions initial model}
+check_model(model_2)
+```
+
+The situation with this model appears somewhat better, except for the scale location plot, which clearly shows a pattern and a wiggly reference line. We have no problems with multicollinearity detected. The residuals appear somewhat normal and the reference line in residual plot is not deviating much from straight. However, a strange pattern can also be seen at the residual plot, we have two long groups of points. This is because in the log10 of mission hours distribution, we saw two peaks.
+
+## Compare model 1 and model 2
+
+```{r F change}
+compare_performance(model_1, model_2)
+anova(model_1, model_2)
+```
+
+We see that F-change is better in favor of model 2. Remember that the F-statistic for model 1 is 382, and for model 2 is 471. Also, AIC, BIC and RMSE are indicate that the second model is better. Finally, the second model explains much more variance than the initial model. 
+
+## Outliers and influential cases
+
+Here we will check influential cases
+
+```{r Outliers and influential cases}
+
+# Calculate residuals and influence indices
+astronauts_drop <- astronauts_drop %>% 
+  mutate(
+    zresid = abs(rstandard(model_2)),
+    sresid = abs(rstudent(model_2)),
+    cook = cooks.distance(model_2),
+    leverage = hatvalues(model_2)
+  )
+
+# Identify high studentized or standardized residuals
+astronauts_drop %>% 
+  filter(zresid > 3 | sresid > 3) %>% 
+  dplyr::select(id, zresid, sresid, cook, leverage) %>% 
+  print(n = Inf) # 24, 367, 449
+
+# Identify influential cases
+
+# Calculate the cutoff for leverage, 3 * average leverage
+hat_cutoff <-  (3 + 1)/nrow(astronauts_drop)*3
+
+astronauts_drop %>% 
+  filter(cook > 1 | leverage > hat_cutoff) %>% 
+  dplyr::select(id, zresid, sresid, cook, leverage) %>% 
+  print(n = Inf) # 24, 35, 55, 58, 62
+```
+
+We identified the most influential cases and outliers, those are cases: 24, 35, 55, 58, 62, 24, 367, 449; as well as high leverage points from the residuals vs leverage graph: 134, 135, 87, 84, 20.
+
+We can remove them and see how the model will perform
+
+```{r model 2 updated}
+
+# Remove outliers and influential cases
+astronauts_updated <- astronauts_drop %>% 
+  slice(-c(24, 35, 55, 58, 62, 24, 367, 449, 134, 135, 87, 84, 20))
+
+# Fit model 2 again
+model_2_updated <- lm(hours_mission_log ~ year_of_mission + country_group + eva_group, data = 
+                        astronauts_updated)
+
+# Look at the summary and coefficients
+glance(model_2_updated)
+tidy(model_2_updated, conf.int = TRUE)
+```
+
+### Check the updated model
+
+```{r check updated}
+check_model(model_2_updated)
+```
+
+The plots did not change much. What we can do is to run a robust regression and compare the estimates with the original estimates, since we have too many influential outliers. However, robust regression is not a cure for heteroskedasticity. We will try it anyway.
+
+------------------------------------------------------------------------
+
+## Run robust regression
+
+```{r robust model}
+model_robust <- rlm(hours_mission_log ~ year_of_mission + country_group + eva_group, data = 
+                        astronauts_updated)
+
+summary(model_robust)
+
+```
+
+The residual standard error i somewhat lower for the robust model, comparing to the updated model 2. On the other hand, unstandaridzed estimates appear very similar.
+
+Therefore, we decided to keep updated model 2.
+
+------------------------------------------------------------------------
+
+## **Final model - model_2\_updated**
+
+```{r final model}
+
+# Calculate coefficients and add standardized coefficients
+model_2_updated_coeff <- tidy(model_2_updated, conf.int = TRUE) %>% 
+  mutate(beta = lm.beta(model_2_updated)$standardized.coefficients) %>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  dplyr::select(term, estimate, beta, everything())
+
+# Summary table
+glance(model_2_updated) %>% 
+  round(2) %>% 
+    kbl(caption = "Final model summary") %>% 
+      kable_classic(full_width = FALSE, position = "left") 
+
+# Coefficients table
+model_2_updated_coeff %>% 
+    kbl(caption = "Final model coefficients") %>% 
+      kable_classic(full_width = FALSE, position = "left") 
+
+```
+
+# **Conclusion**
+
+In this project, we analyzed astronauts data from Tidytuesday, provided by NASA, Roskosmos and "fun-made websites". The dataset was prepared by Georgios Karamanis.
+
+We saw that the US had many more missions than any other country, but Soviet Union / Russia had more hours spent in space in total. Astronaut with the most days spent in space is Gennady Padalka around 800 days, followed by Krikalev Sergei, Kaleri Aleksandr, and so on.
+
+Beside Mir and Salyut 6, Russians spent considerable time on International Space Station. Both Russians and Americans had more military belonging astronauts than civilians.
+
+**Regression**. We performed hierarchical regression analysis, predicting mission duration by year, in the first model, and then by year, country (US or Russia) and presence of extravehicular activities (Present or Not present). The second model is significantly better, explaining 57% of the mission time. All predictors were significant - year of mission and country (Russia) in positive, and EVA (no Eva) in negative direction. Our finding from EDA that the Russians although have less missions, its astronauts spend more time on missions. Also, missions are getting longer as the time goes. and obviously no extravehicular activities are associated with shorter missions.
+
+## **Limitations**
+
+This model have serious assumptions violation and the results should be taken with a caution. The distribution of outcome variable was extremely skewed, and after transformation it resembled almost a bimodal distribution. We also performed a robust regression and compared the estimates with the original model. However, that could not solve the clearly heteroskedastic variance. Perhaps, different modeling method should be applied more robust to these kind of assumption violations.
+
+------------------------------------------------------------------------
+
+**МИР Space station**
+
+![Source: Wikipedia](https://upload.wikimedia.org/wikipedia/commons/0/09/Mir_Space_Station_viewed_from_Endeavour_during_STS-89.jpg)
